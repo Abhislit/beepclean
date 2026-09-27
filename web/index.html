@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BeepClean - curse word beeper</title>
+<style>
+  :root {
+    --bg: #0e1117; --panel: #161b24; --panel2: #1d2430; --line: #2a3340;
+    --text: #e6edf3; --muted: #8b98a9; --accent: #4f8cff; --ok: #3fb950;
+    --warn: #d29922; --err: #f85149;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    padding: 22px 26px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+  }
+  h1 { font-size: 20px; margin: 0; letter-spacing: .2px; }
+  h1 span { color: var(--accent); }
+  .tag { color: var(--muted); font-size: 13px; }
+  main { max-width: 1080px; margin: 0 auto; padding: 26px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 20px; margin-bottom: 20px;
+  }
+  .drop {
+    border: 2px dashed var(--line); border-radius: 12px; padding: 42px 20px;
+    text-align: center; cursor: pointer; transition: .15s; background: var(--panel2);
+  }
+  .drop:hover, .drop.over { border-color: var(--accent); background: #1a2331; }
+  .drop strong { display: block; font-size: 16px; margin-bottom: 6px; }
+  .drop span { color: var(--muted); font-size: 13px; }
+  .bar { height: 8px; background: var(--panel2); border-radius: 99px; overflow: hidden; margin: 16px 0 8px; }
+  .bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+  .row { display: flex; justify-content: space-between; color: var(--muted); font-size: 13px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px; text-transform: uppercase; letter-spacing: .4px; }
+  input, select, textarea {
+    width: 100%; background: var(--panel2); color: var(--text);
+    border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font: inherit;
+  }
+  input[type=range] { padding: 0; }
+  textarea { min-height: 110px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px; }
+  button {
+    background: var(--accent); color: #fff; border: 0; border-radius: 8px;
+    padding: 10px 18px; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  button.ghost { background: transparent; border: 1px solid var(--line); color: var(--text); font-weight: 500; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: .4px; }
+  td.mono, .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .pill { padding: 2px 9px; border-radius: 99px; font-size: 11.5px; font-weight: 600; }
+  .pill.speech { background: #1f3a5f; color: #7fb3ff; }
+  .pill.visual { background: #4a2f14; color: #e3b341; }
+  .note { background: #1a2331; border-left: 3px solid var(--accent); padding: 10px 14px; border-radius: 0 8px 8px 0; font-size: 13.5px; margin: 12px 0; }
+  .note.err { border-color: var(--err); }
+  .muted { color: var(--muted); }
+  video { width: 100%; border-radius: 10px; background: #000; display: block; }
+  .hstack { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .hidden { display: none !important; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-bottom: 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Beep<span>Clean</span></h1>
+  <span class="tag">upload a video &rarr; curse words get beeped out, on-screen text gets blurred</span>
+</header>
+
+<main>
+  <div class="card">
+    <div class="drop" id="drop">
+      <strong>Drop a video here, or click to choose</strong>
+      <span>mp4, mov, mkv, webm, avi, mp3, wav, m4a &middot; up to <span id="maxmb">2048</span> MB</span>
+    </div>
+    <input type="file" id="file" class="hidden" accept="video/*,audio/*">
+    <div id="progress" class="hidden">
+      <div class="bar"><i id="bar"></i></div>
+      <div class="row"><span id="stage">Starting</span><span id="pct">0%</span></div>
+    </div>
+  </div>
+
+  <div class="card hidden" id="result">
+    <div class="hstack" style="justify-content:space-between; margin-bottom:14px">
+      <div>
+        <strong id="rname"></strong>
+        <div class="muted" id="rsummary" style="font-size:13px"></div>
+      </div>
+      <div class="hstack">
+        <button id="again" class="ghost">Clean another</button>
+        <a id="download" download><button>Download</button></a>
+      </div>
+    </div>
+    <div id="notes"></div>
+    <video id="player" controls preload="metadata"></video>
+    <div id="tables" style="margin-top:18px"></div>
+  </div>
+
+  <div class="card">
+    <details open>
+      <summary>Settings</summary>
+      <div class="grid">
+        <div>
+          <label>Speech model</label>
+          <select id="model">
+            <option value="tiny.en">tiny.en - fastest, least accurate</option>
+            <option value="base.en">base.en - balanced</option>
+            <option value="small.en">small.en - slowest, best</option>
+          </select>
+        </div>
+        <div>
+          <label>On-screen text style</label>
+          <select id="blur_mode">
+            <option value="blur">Blur</option>
+            <option value="pixelate">Pixelate</option>
+            <option value="blackout">Black box</option>
+          </select>
+        </div>
+        <div>
+          <label>Beep pitch (Hz)</label>
+          <input type="number" id="beep_freq" min="100" max="8000" step="50">
+        </div>
+        <div>
+          <label>Beep loudness</label>
+          <input type="range" id="beep_amplitude" min="0" max="1" step="0.05">
+        </div>
+        <div>
+          <label>Shortest beep (ms)</label>
+          <input type="number" id="beep_min_ms" min="20" max="2000" step="10">
+        </div>
+        <div>
+          <label>Longest beep (ms)</label>
+          <input type="number" id="beep_max_ms" min="20" max="4000" step="10">
+        </div>
+        <div>
+          <label>Read on-screen text</label>
+          <select id="ocr_enabled">
+            <option value="true">Yes - also blur subtitles</option>
+            <option value="false">No - audio only (faster)</option>
+          </select>
+        </div>
+        <div>
+          <label>Max output resolution (short side)</label>
+          <input type="number" id="max_resolution" min="240" max="4320" step="120">
+        </div>
+        <div>
+          <label>Report only (no edits)</label>
+          <select id="report_only">
+            <option value="false">No - actually edit the video</option>
+            <option value="true">Yes - just list what was found</option>
+          </select>
+        </div>
+      </div>
+    </details>
+    <details style="margin-top:14px">
+      <summary>Word list</summary>
+      <div class="grid">
+        <div>
+          <label>Blocked stems (plurals auto-handled)</label>
+          <textarea id="stems"></textarea>
+        </div>
+        <div>
+          <label>Extra phrases</label>
+          <textarea id="extra"></textarea>
+        </div>
+        <div>
+          <label>Never flag these</label>
+          <textarea id="allow"></textarea>
+        </div>
+      </div>
+      <div class="hstack" style="margin-top:12px">
+        <button id="savewords" class="ghost">Save word list</button>
+        <span id="wordmsg" class="muted" style="font-size:13px"></span>
+      </div>
+    </details>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let poller = null;
+
+const NUMERIC = ["beep_freq","beep_amplitude","beep_min_ms","beep_max_ms","max_resolution"];
+const BOOLEAN = ["ocr_enabled","report_only"];
+const TEXT = ["model","blur_mode"];
+
+async function loadSettings() {
+  const s = await (await fetch("/api/settings")).json();
+  for (const [k, v] of Object.entries(s)) {
+    if (NUMERIC.includes(k) && $(k)) $(k).value = v;
+    else if (BOOLEAN.includes(k) && $(k)) $(k).value = String(v);
+    else if (TEXT.includes(k) && $(k)) $(k).value = v;
+  }
+  $("maxmb").textContent = s.max_upload_mb;
+}
+
+async function loadWords() {
+  const w = await (await fetch("/api/wordlist")).json();
+  $("stems").value = (w.stems || []).join("\n");
+  $("extra").value = (w.extra || []).join("\n");
+  $("allow").value = (w.allow || []).join("\n");
+}
+
+async function saveSettings() {
+  const body = {};
+  for (const k of NUMERIC) if ($(k)) body[k] = parseFloat($(k).value);
+  for (const k of BOOLEAN) if ($(k)) body[k] = $(k).value === "true";
+  for (const k of TEXT) if ($(k)) body[k] = $(k).value;
+  await fetch("/api/settings", {
+    method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)
+  });
+}
+
+$("savewords").onclick = async () => {
+  const body = {
+    stems: $("stems").value.split("\n").map(s => s.trim()).filter(Boolean),
+    extra: $("extra").value.split("\n").map(s => s.trim()).filter(Boolean),
+    allow: $("allow").value.split("\n").map(s => s.trim()).filter(Boolean),
+  };
+  const res = await fetch("/api/wordlist", {
+    method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)
+  });
+  $("wordmsg").textContent = res.ok ? "Saved." : "Could not save.";
+};
+
+for (const id of ["model","blur_mode","beep_freq","beep_amplitude","beep_min_ms",
+                  "beep_max_ms","ocr_enabled","max_resolution","report_only"]) {
+  $(id).addEventListener("change", saveSettings);
+}
+
+const drop = $("drop");
+drop.onclick = () => $("file").click();
+$("file").onchange = e => { if (e.target.files[0]) start(e.target.files[0]); };
+["dragenter","dragover"].forEach(ev => drop.addEventListener(ev, e => {
+  e.preventDefault(); drop.classList.add("over");
+}));
+["dragleave","drop"].forEach(ev => drop.addEventListener(ev, e => {
+  e.preventDefault(); drop.classList.remove("over");
+}));
+drop.addEventListener("drop", e => {
+  const f = e.dataTransfer.files[0];
+  if (f) start(f);
+});
+$("again").onclick = () => location.reload();
+
+const fmt = s => {
+  s = Math.max(0, s || 0);
+  const m = Math.floor(s / 60);
+  return m + ":" + String(Math.floor(s % 60)).padStart(2, "0");
+};
+
+async function start(file) {
+  await saveSettings();
+  $("result").classList.add("hidden");
+  $("drop").textContent = "Uploading " + file.name + " ...";
+  const form = new FormData();
+  form.append("file", file);
+  let job;
+  try {
+    const res = await fetch("/api/upload", {method: "POST", body: form});
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({}));
+      throw new Error(detail.detail || "Upload failed.");
+    }
+    job = await res.json();
+  } catch (err) {
+    $("drop").innerHTML = "<strong>Upload failed</strong><span>" + err.message + "</span>";
+    return;
+  }
+  $("progress").classList.remove("hidden");
+  poll(job.id);
+}
+
+function poll(id) {
+  clearInterval(poller);
+  poller = setInterval(async () => {
+    let job;
+    try { job = await (await fetch("/api/job/" + id)).json(); }
+    catch { return; }
+    const pct = Math.round((job.progress || 0) * 100);
+    $("bar").style.width = pct + "%";
+    $("stage").textContent = job.message || job.stage;
+    $("pct").textContent = pct + "%";
+    if (job.status === "done") { clearInterval(poller); show(job); }
+    else if (job.status === "error") {
+      clearInterval(poller);
+      $("drop").innerHTML = "<strong>Failed</strong><span>" + (job.error || "") + "</span>";
+    }
+    else if (job.status === "cancelled") { clearInterval(poller); $("drop").textContent = "Cancelled."; }
+  }, 800);
+}
+
+function show(job) {
+  const r = job.report || {};
+  $("progress").classList.add("hidden");
+  $("drop").classList.add("hidden");
+  $("result").classList.remove("hidden");
+  $("rname").textContent = job.name;
+  $("download").href = "/api/job/" + job.id + "/download";
+  $("player").src = "/api/job/" + job.id + "/video";
+  const bits = [];
+  if (r.duration) bits.push(fmt(r.duration) + " long");
+  if (r.width) bits.push(r.width + "x" + r.height);
+  bits.push((r.beep_count || 0) + " beeped");
+  bits.push((r.blur_count || 0) + " blurred");
+  if (r.elapsed) bits.push("took " + fmt(r.elapsed));
+  $("rsummary").textContent = bits.join(" \u00b7 ");
+  $("notes").innerHTML = (r.notes || []).map(n => '<div class="note">' + n + '</div>').join("");
+
+  const table = (rows, kind) => {
+    if (!rows || !rows.length) return "";
+    return "<table><thead><tr><th>Time</th><th>Word</th><th>Source</th>" +
+      (kind === "visual" ? "<th>On-screen text</th>" : "") +
+      "<th>Confidence</th></tr></thead><tbody>" +
+      rows.map(x => "<tr><td class='mono'>" + fmt(x.start) + " &ndash; " + fmt(x.end) + "</td>" +
+        "<td>" + escapeHtml(x.word) + "</td>" +
+        "<td><span class='pill " + kind + "'>" + kind + "</span></td>" +
+        (kind === "visual" ? "<td>" + escapeHtml(x.text || "") + "</td>" : "") +
+        "<td class='mono'>" + (x.confidence != null ? x.confidence.toFixed(2) : "-") +
+        "</td></tr>").join("") +
+      "</tbody></table>";
+  };
+  const html = table(r.words, "speech") + table(r.text_hits, "visual");
+  $("tables").innerHTML = html || '<p class="muted">Nothing was flagged.</p>';
+}
+
+function escapeHtml(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, c =>
+    ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+loadSettings();
+loadWords();
+</script>
+</body>
+</html>
