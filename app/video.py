@@ -88,8 +88,8 @@ def _blur(region: np.ndarray, radius: int) -> None:
     region[:] = np.asarray(source.filter(ImageFilter.BoxBlur(radius)))
 
 
-def _apply_effects(
-    frame: av.VideoFrame, tracks: Sequence[Interval], settings: Settings
+def apply_blur_to_frame(
+    frame: av.VideoFrame, tracks: Sequence[Interval], mode: str
 ) -> None:
     width, height = frame.width, frame.height
     views = _plane_views(frame)
@@ -101,24 +101,28 @@ def _apply_effects(
         y1 = max(y0 + 1, min(height, int(round(box[3] * height))))
         if x1 - x0 < 2 or y1 - y0 < 2:
             continue
-        box_width, box_height = x1 - x0, y1 - y0
+        box_height = y1 - y0
         for index, (_, array) in enumerate(views):
             plane_width, plane_height = array.shape[1], array.shape[0]
             px0 = int(x0 * plane_width / width)
             py0 = int(y0 * plane_height / height)
-            px1 = max(px0 + 1, int(round(x1 * plane_width / width)))
-            py1 = max(py0 + 1, int(round(y1 * plane_height / height)))
-            px1 = min(plane_width, px1)
-            py1 = min(plane_height, py1)
+            px1 = min(plane_width, max(px0 + 1, int(round(x1 * plane_width / width))))
+            py1 = min(plane_height, max(py0 + 1, int(round(y1 * plane_height / height))))
             if px1 <= px0 or py1 <= py0:
                 continue
             region = array[py0:py1, px0:px1]
-            if settings.blur_mode == "blackout":
+            if mode == "blackout":
                 _blackout(region, luma=index == 0)
-            elif settings.blur_mode == "pixelate":
+            elif mode == "pixelate":
                 _pixelate(region, max(4, min(200, int(box_height * 0.25))))
             else:
                 _blur(region, max(3, min(200, int(box_height * 0.35))))
+
+
+def _apply_effects(
+    frame: av.VideoFrame, tracks: Sequence[Interval], settings: Settings
+) -> None:
+    apply_blur_to_frame(frame, tracks, settings.blur_mode)
 
 
 def render_video(

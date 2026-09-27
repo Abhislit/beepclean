@@ -5,6 +5,8 @@ import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+
+import numpy as np
 from typing import Callable
 
 from . import audio as audio_engine
@@ -66,7 +68,59 @@ class Transcriber:
         self._model = None
         gc.collect()
 
+    def words_array(
+        self,
+        audio: "np.ndarray",
+        offset: float = 0.0,
+        progress: Progress | None = None,
+        cancelled: Cancelled | None = None,
+    ):
+        segments, _ = self.model().transcribe(
+            audio,
+            language="en",
+            word_timestamps=True,
+            vad_filter=True,
+            vad_parameters={
+                "min_silence_duration_ms": 400,
+                "threshold": self.settings.vad_threshold,
+            },
+            condition_on_previous_text=self.settings.condition_on_previous_text,
+            beam_size=self.settings.beam_size,
+            temperature=0.0,
+        )
+        collected: list[tuple[str, float, float, float]] = []
+        for segment in segments:
+            if cancelled and cancelled():
+                return collected
+            for word in segment.words or ():
+                text = (word.word or "").strip()
+                if text:
+                    collected.append(
+                        (
+                            text,
+                            float(word.start) + offset,
+                            float(word.end) + offset,
+                            float(word.probability or 0.0),
+                        )
+                    )
+            if progress:
+                progress(min(0.99, float(segment.end or 0.0)), "Listening for words")
+        return collected
+
     def words(self, path: Path, progress: Progress | None, cancelled: Cancelled | None):
+        segments, _ = self.model().transcribe(
+            str(path),
+            language="en",
+            word_timestamps=True,
+            vad_filter=True,
+            vad_parameters={
+                "min_silence_duration_ms": 400,
+                "threshold": self.settings.vad_threshold,
+            },
+            condition_on_previous_text=self.settings.condition_on_previous_text,
+            beam_size=self.settings.beam_size,
+            temperature=0.0,
+        )
         segments, _ = self.model().transcribe(
             str(path),
             language="en",

@@ -52,6 +52,46 @@ def has_audio(path: Path) -> bool:
         return False
 
 
+class BeepPlan:
+    """Applies beeps to decoded planar-float audio, frame by frame.
+
+    Shared by the batch pipeline and the live filter so both produce identical
+    beeps. Beep waveforms are pre-rendered per interval and sliced by absolute
+    sample index, so a beep stays phase continuous even when it spans several
+    audio frames.
+    """
+
+    def __init__(self, intervals: Sequence[Interval], rate: int, settings: Settings) -> None:
+        self.rate = rate
+        self.entries: list[tuple[int, int, np.ndarray]] = [
+            (first, last, make_beep(rate, last - first, settings))
+            for first, last, _ in build_plan(merge(intervals), rate, settings)
+        ]
+        self.total = sum(last - first for first, last, _ in self.entries)
+
+    def __bool__(self) -> bool:
+        return bool(self.entries)
+
+    def apply(self, array: np.ndarray, base: int) -> bool:
+        """Patch array in place. base is the absolute sample index of array[0]."""
+        if not self.entries or array.size == 0:
+            return False
+        count = array.shape[-1]
+        touched = False
+        for first, last, beep in self.entries:
+            low = max(base, first)
+            high = min(base + count, last)
+            if high <= low:
+                continue
+            patch = beep[low - first : high - first]
+            if array.ndim == 1:
+                array[low - base : high - base] = patch
+            else:
+                array[:, low - base : high - base] = patch.reshape(1, -1)
+            touched = True
+        return touched
+
+
 def splice_audio(
     src: Path,
     dst: Path,
@@ -66,11 +106,8 @@ def splice_audio(
         source = container.streams.audio[0]
         rate = int(source.rate)
         layout = source.layout.name
-        channel_count = len(source.layout.channels)
-        plan = build_plan(merge(intervals), rate, settings)
-        cache: dict[int, np.ndarray] = {}
-        for index, (first, last, _) in enumerate(plan):
-            cache[index] = make_beep(rate, last - first, settings)
+        plan = BeepPlan(intervals, rate, settings)
+        cursor = 0
 
         with av.open(str(dst), "w") as out:
             target = out.add_stream("aac", rate=rate)
@@ -78,8 +115,6 @@ def splice_audio(
             target.bit_rate = int(settings.audio_bitrate.rstrip("k")) * 1000
             reader = av.AudioResampler(format="fltp", layout=layout, rate=rate)
             writer = av.AudioResampler(format="fltp", layout=layout, rate=rate)
-            cursor = 0
-            total = 0.0
 
             def emit(frames) -> None:
                 nonlocal cursor
@@ -89,21 +124,9 @@ def splice_audio(
                     array = frame.to_ndarray()
                     if array.ndim == 1:
                         array = array.reshape(1, -1)
-                    count = array.shape[-1]
                     base = cursor
-                    cursor += count
-                    patched = False
-                    for index, (first, last, _) in enumerate(plan):
-                        low = max(base, first)
-                        high = min(base + count, last)
-                        if high <= low:
-                            continue
-                        beep = cache[index]
-                        array[:, low - base : high - base] = beep[
-                            low - first : high - first
-                        ].reshape(1, -1)
-                        patched = True
-                    if patched:
+                    cursor += array.shape[-1]
+                    if plan.apply(array, base):
                         replacement = av.AudioFrame.from_ndarray(
                             np.ascontiguousarray(array), format="fltp", layout=layout
                         )
@@ -119,13 +142,12 @@ def splice_audio(
                 if cancelled and cancelled():
                     return False
                 emit(reader.resample(frame))
-                total = max(total, float(frame.pts or 0) * float(frame.time_base or 0))
-                if progress and total > 0:
-                    progress(min(0.99, float(frame.samples) / (rate * 30.0)), "Beeping audio")
+                if progress:
+                    progress(0.0, "Beeping audio")
             emit(reader.resample(None))
             for converted in writer.resample(None):
                 for packet in target.encode(converted):
                     out.mux(packet)
             for packet in target.encode(None):
                 out.mux(packet)
-    return channel_count >= 0
+    return True

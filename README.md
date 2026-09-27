@@ -146,6 +146,88 @@ Everything in `data/settings.json` is editable in the browser under **Settings**
 - `allow` - words that are never flagged, whatever the stems say. This is the escape
   hatch for false positives.
 
+## Live streams
+
+Same filtering, applied while a stream is running.
+
+```bash
+# try it with no stream setup at all: a local file played as if it were live
+./try.sh --simulate samples/1-subtitle-curse.mp4 --paced
+
+# a real stream: pull from one RTMP endpoint, push the filtered result to another
+./try.sh --rtmp-in rtmp://live.twitch.tv/app/STREAM_KEY \
+         --rtmp-out rtmp://a.relay/APP/STREAM_KEY
+```
+
+`--paced` waits in real time so you can watch it behave like a live feed. `--fast`
+(the default for local files) runs as fast as the CPU allows, which is what you
+want for testing.
+
+### How it works
+
+The stream is cut into windows. Each window is analysed, edited, then emitted, so
+the output trails the input by a predictable amount instead of drifting:
+
+1. frames are decoded and the lower band of each frame is OCR'd on a timer
+2. audio for the window is transcribed with Whisper
+3. both decisions are applied, then the window is encoded and pushed
+
+Detections carry across window boundaries, so a caption that straddles two windows
+is still caught.
+
+### What it costs you
+
+This is the important part. The analysis is not free, and the delay is real:
+
+| Setting | Delay added | Notes |
+|---|---|---|
+| Blur on-screen text only | about 1s | the fast path |
+| Blur + beep speech | about 7 to 13s | roughly one window plus processing |
+
+That speech delay is not a bug you can tune away. Whisper needs about 0.65x realtime
+just for the audio, so a speech-filtered stream runs behind by design. It is fine if
+you plan for a moderation delay, and wrong if you need to talk to people in real
+time.
+
+The window is 6 seconds by default because 4 second windows miss words. Measured on
+a clip where the curse word sits at 12.0s:
+
+```
+  4s window   3.64s   caught=False   'as a country where we speak English.'
+  6s window   4.09s   caught=True    'as a country where we speak English. Fuck you!'
+  8s window   3.32s   caught=True    'as a country where we speak English. Fuck you!'
+```
+
+### Can it keep up?
+
+Measured on this machine, 4 CPU cores and no GPU, blurring only:
+
+| Stream size | Throughput | Result |
+|---|---|---|
+| 640x360 | 0.98x realtime | keeps up, about 0.8s behind |
+| 1280x720 | 0.61x realtime | falls behind |
+| 1920x1080 | 0.49x realtime | falls behind |
+
+Adding speech takes it to roughly 0.28x realtime at 1080p. **So on this hardware
+only 360p visual filtering runs in real time.** For a real 720p or 1080p stream you
+need a faster machine or a GPU, and I could not test that here.
+
+Rather than buffering forever when it cannot keep up, it drops the analysis for a
+window and passes the video through unfiltered, so the stream keeps flowing at the
+cost of missing a word occasionally. You will see `degraded` in the summary.
+
+Useful flags:
+
+```bash
+--no-speech          # blur only, the fast path
+--no-visual          # beeps only
+--window 8           # longer windows, better speech accuracy, more delay
+--max-height 480     # downscale to save encode time
+--ocr-interval 0.5   # sample frames more often, catches short captions
+--ocr-band 0.5       # scan more of the frame for text
+--preset ultrafast   # default, needed to keep up
+```
+
 ## Tests
 
 ```bash
@@ -190,6 +272,7 @@ about 3x the clip duration end to end with everything on.
 ## Layout
 
 ```
+app/live.py         the live filter: windowed, bounded delay, RTMP or local
 app/profanity.py   word normalisation and matching
 app/audio.py       beep synthesis and splicing
 app/video.py       PyAV decode/encode/remux, blur and pixelate
@@ -204,3 +287,9 @@ work/              uploads and per-job output, safe to delete
 
 `run.sh` clears `PYTHONPATH` before starting, because the ROS entries on this
 machine's `PYTHONPATH` break Python's plugin loading.
+
+- **Live falls behind on this machine.** See the live section above. Use
+  `--no-speech` and 360p, or run it somewhere with a GPU.
+- **RTMP has not been tested end to end**, because there is no stream to point it
+  at here. The protocol is supported by the bundled FFmpeg and the code path is
+  the same one the local tests exercise, but treat the first real run as untested.

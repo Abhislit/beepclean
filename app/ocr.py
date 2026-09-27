@@ -95,6 +95,66 @@ class OcrScanner:
             )
         return found
 
+    def inspect(
+        self,
+        frame: av.VideoFrame,
+        stamp: float,
+        records: list[tuple[float, Box, str, float]],
+        options=None,
+    ) -> None:
+        """Run OCR on one frame and append detections. Used by the live filter."""
+        interval = getattr(options, "ocr_interval", None) if options else None
+        band = getattr(options, "ocr_band", None) if options else None
+        max_width = getattr(options, "ocr_max_width", None) if options else None
+        if band is None:
+            band = self.settings.ocr_band
+        if max_width is None:
+            max_width = self.settings.ocr_max_width
+        image = frame.to_image()
+        width, height = image.size
+        top = int(height * (1.0 - band))
+        crop = image.crop((0, top, width, height))
+        shrink = min(1.0, max_width / max(1, crop.width))
+        if shrink < 1.0:
+            crop = crop.resize(
+                (max(32, int(crop.width * shrink)), max(8, int(crop.height * shrink)))
+            )
+        for box, text, score in self._detect(np.asarray(crop.convert("RGB"))):
+            x0, y0, x1, y1 = box
+            full_y0 = top + (y0 / max(1, crop.height)) * (height - top)
+            full_y1 = top + (y1 / max(1, crop.height)) * (height - top)
+            normalized = (
+                max(0.0, min(1.0, x0 / max(1, crop.width))),
+                max(0.0, min(1.0, full_y0 / height)),
+                max(0.0, min(1.0, x1 / max(1, crop.width))),
+                max(0.0, min(1.0, full_y1 / height)),
+            )
+            if normalized[3] - normalized[1] > MAX_BOX_HEIGHT:
+                continue
+            records.append((stamp, normalized, text, score))
+
+    def tracks_to_intervals(
+        self,
+        records: Sequence[tuple[float, Box, str, float]],
+        min_duration: float | None = None,
+        pad: float | None = None,
+    ) -> list[Interval]:
+        """Turn per-frame detections into time ranges, matching batch behaviour.
+
+        The live filter overrides min_duration and pad: a short subtitle can be
+        sampled only once, and a single sighting should still blur a plausible
+        span rather than nothing at all.
+        """
+        floor = self.settings.ocr_min_duration if min_duration is None else min_duration
+        margin = 0.08 if pad is None else pad
+        by_time: dict[float, list[tuple[Box, str, float]]] = {}
+        for stamp, box, text, score in records:
+            by_time.setdefault(round(stamp, 3), []).append((box, normalize(text), score))
+        tracks: list[_Track] = []
+        for stamp in sorted(by_time):
+            self._update(tracks, by_time[stamp], stamp)
+        return self._finish(tracks, floor, margin)
+
     def scan(
         self,
         path: Path,
@@ -207,15 +267,21 @@ class OcrScanner:
             else:
                 tracks.append(_Track(box, clean, score, now, now, score))
 
-    def _finish(self, tracks: Sequence[_Track]) -> list[Interval]:
+    def _finish(
+        self,
+        tracks: Sequence[_Track],
+        floor: float | None = None,
+        margin: float | None = None,
+    ) -> list[Interval]:
+        minimum = self.settings.ocr_min_duration if floor is None else floor
         results: list[Interval] = []
         for track in tracks:
-            if track.duration < self.settings.ocr_min_duration:
+            if track.duration < minimum:
                 continue
             hits = self.words.find(track.text)
             if not hits:
                 continue
-            pad = 0.08
+            pad = 0.08 if margin is None else margin
             start = max(0.0, track.start - pad)
             end = track.last + pad
             results.append(

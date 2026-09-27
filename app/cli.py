@@ -97,6 +97,105 @@ def do_demo(directory: Path) -> int:
     return 0 if ok else 1
 
 
+def do_live(args, settings) -> int:
+    from .live import LiveFilter, LiveOptions
+
+    directory = Path(args.out_dir).expanduser()
+    directory.mkdir(parents=True, exist_ok=True)
+
+    if args.rtmp_in:
+        source = args.rtmp_in
+        destination = args.rtmp_out or ""
+        if not destination:
+            print("Live input needs --out with an rtmp:// destination.", file=sys.stderr)
+            return 2
+    elif args.simulate:
+        origin = Path(args.simulate).expanduser()
+        if not origin.exists():
+            print(f"no such file: {origin}", file=sys.stderr)
+            return 2
+        source = str(origin)
+        destination = str(
+            directory / (args.out or f"{origin.stem}-live.mp4")
+        )
+    else:
+        print("give --rtmp-in, or --simulate FILE to try it without a stream.", file=sys.stderr)
+        return 2
+
+    options = LiveOptions(
+        window=args.window,
+        ocr_interval=args.ocr_interval,
+        max_height=args.max_height,
+        preset=args.preset,
+        pace=True if args.paced else (False if args.fast else None),
+        speech_enabled=not args.no_speech,
+        visual_enabled=not args.no_visual,
+    )
+    if args.ocr_band:
+        settings.ocr_band = args.ocr_band
+
+    live = LiveFilter(settings, options)
+    print(f"source:      {source}")
+    print(f"destination: {destination}")
+    print(
+        f"window {options.window}s, OCR every {options.ocr_interval}s,"
+        f" output {'source size' if not options.max_height else str(options.max_height) + 'px'},"
+        f" preset {options.preset}"
+    )
+    pace_label = (
+        "real time, like a live stream"
+        if options.pace
+        else ("as fast as possible" if options.pace is False else "as fast as possible")
+    )
+    print(f"pacing:      {pace_label}")
+    print("\nCtrl+C to stop.\n")
+
+    try:
+        report = live.run(
+            source,
+            destination,
+            progress=lambda fraction, message: print(
+                f"  {message}", flush=True
+            )
+            if message.startswith(("live", "emitted"))
+            else None,
+        )
+    except KeyboardInterrupt:
+        print("\nstopped.")
+        return 130
+    except Exception as error:  # noqa: BLE001
+        print(f"\nFAILED: {type(error).__name__}: {error}", file=sys.stderr)
+        return 1
+
+    print(f"\n{'=' * 62}")
+    print("  live run finished")
+    print(f"{'=' * 62}")
+    print(f"  windows processed   {report.windows}")
+    print(f"  media consumed      {report.media_seconds:.1f}s")
+    print(f"  wall clock          {report.wall_seconds:.1f}s  ({report.speed:.2f}x realtime)")
+    print(f"  average latency     {report.average_latency:.2f}s per window")
+    print(f"  peak latency        {report.peak_latency:.2f}s")
+    print(f"  beeps inserted      {len(report.beeps)}")
+    print(f"  regions blurred     {len(report.blurs)}")
+    for hit in report.beeps[:40]:
+        print(
+            f"    {fmt(hit['start'])} -> {fmt(hit['end'])}  {hit['word']:<18}"
+            f" confidence {hit['confidence']:.2f}"
+        )
+    for hit in report.blurs[:40]:
+        print(
+            f"    {fmt(hit['start'])} -> {fmt(hit['end'])}  {hit['word']:<18}"
+            f" read as {hit['text']!r}"
+        )
+    if report.dropped:
+        print("  WARNING: could not keep up, some input was skipped.")
+    for note in report.errors[-5:]:
+        print(f"  note: {note}")
+    if destination and "://" not in destination:
+        print(f"\n  play it: xdg-open {destination}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="beepclean", description="Beep out curse words in a video."
@@ -115,6 +214,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--make-samples", action="store_true", help="write sample clips and exit")
     parser.add_argument("--list-samples", action="store_true", help="show the sample clips")
     parser.add_argument("--demo", action="store_true", help="build a test clip and check it")
+    parser.add_argument("--rtmp-in", help="live source, e.g. rtmp://live.twitch.tv/app/KEY")
+    parser.add_argument("--rtmp-out", help="live destination, e.g. rtmp://a.relay/KEY")
+    parser.add_argument("--simulate", metavar="FILE", help="treat a local file as a live feed")
+    parser.add_argument("--fast", action="store_true", help="run as fast as possible, no waiting")
+    parser.add_argument("--paced", action="store_true", help="play a local file at wall-clock speed, like a real stream")
+    parser.add_argument("--window", type=float, default=6.0, help="live analysis window, seconds")
+    parser.add_argument("--ocr-interval", type=float, default=0.75, help="seconds between OCR samples")
+    parser.add_argument("--max-height", type=int, default=0, help="cap output height for live, 0 keeps source size")
+    parser.add_argument("--preset", default="ultrafast", help="x264 preset for live")
+    parser.add_argument("--no-speech", action="store_true", help="live: skip the beep path")
+    parser.add_argument("--no-visual", action="store_true", help="live: skip the blur path")
     args = parser.parse_args(argv)
 
     directory = Path(args.out_dir).expanduser()
@@ -138,6 +248,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.demo:
         return do_demo(directory)
 
+    settings = load_settings()
+    if args.ocr_band:
+        settings.ocr_band = args.ocr_band
+
+    if args.rtmp_in or args.simulate:
+        return do_live(args, settings)
+
     if not args.file:
         parser.error("give a file, or use --demo")
     source = Path(args.file).expanduser()
@@ -145,7 +262,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"no such file: {source}", file=sys.stderr)
         return 2
 
-    settings = load_settings()
     if args.no_ocr:
         settings.ocr_enabled = False
     if args.report_only:
@@ -154,8 +270,6 @@ def main(argv: list[str] | None = None) -> int:
         settings.model = args.model
     if args.blur:
         settings.blur_mode = args.blur
-    if args.ocr_band:
-        settings.ocr_band = args.ocr_band
 
     destination = (
         Path(args.out).expanduser()
